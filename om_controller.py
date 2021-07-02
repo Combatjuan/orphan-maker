@@ -71,11 +71,12 @@ class OMState(enum.Enum):
 
 # ------------------------------------------------------------------------------
 class Controller:
-    def __init__(self, length, speedd):
+    def __init__(self, config):
         """
         Set defaults from configuration
         """
         self.state = OMState.STARTING
+        self.config = config
 
     def run(self):
         """
@@ -103,7 +104,7 @@ class Controller:
             pass
         elif self.state == OMState.RUNNING:
             pass
-        elif self.state == OMState.BRAKING:
+        elif self.state == OMState.STOPPING:
             pass
         elif self.state == OMState.RETURNING:
             pass
