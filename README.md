@@ -66,7 +66,7 @@ Riblet one provides the power to the system.  A 3phase AC motor turns a belt whi
 * Pneumatic pressure source
 
 # E - Riblet 2
-Riblet is at the other end of the pulley from Riblet 1.  It mostly holds the pulley in tension, aided by guy wires and provides mount points for the overhead sprinkler system.
+Riblet 2 is at the other end of the pulley from Riblet 1.  It mostly holds the pulley in tension, aided by guy wires and provides mount points for the overhead sprinkler system.
 * Riblet 2 bottom upright beam
 * Riblet 2 top upright beam
 * Riblet 2 pulley arm
@@ -120,13 +120,22 @@ Allows the acceleration loop to be manually shifted forward or backwards.
 ## Rotation sensor
 Indicates each time the drive pulley passes a particular point.
 
+## E-Stop
+Directly puts the system in an error state to ensure when E-Stop is
+disengaged, the system does not function.
+
 Software Outputs
 -------
-## Motor go
-When high the motor should accelerate at the set rate.
+## Motor forward
+Drive motor forward
 
-## Motor voltage
-Analog voltage which sets relative motor speed (indirectly)
+## Motor reverse
+Drive motor reverse
+
+## Motor speed
+PWM with 100hz == maximum speed and 0hz = no speed
+
+Pin will PWM to an analog voltage converter to the motor control
 
 ## Brake off
 Disables the break by relieving pneumatic pressure.
@@ -153,22 +162,32 @@ Target max speed at end of acceleration in meters per second.
 
 ## Drive pulley diameter
 Diameter of the pulley that drives the system in meters.
+~9in
 
 ## Acceleration length
 The full lenght of acceleration in meters.
+~70ft
 
 ## Braking length
 How many meters are allowed for braking in meters.
+~30ft
 
 ## Start position
 The number of meters in front of the center of the drive pulley that the expected start position is.
+~12ft
 
 ## Line length
 The full length of the drive line system from center of pulley to center of pulley.
 Used as a check and should match start_pos + accel_len + brake_len
+110
 
 ## Set sensor range
 A range of meters from the start position in which we expect the set sensor to trigger.
+~4 inches
 
 ## Brake delay
 The number of seconds it takes to release the brake fully.
+
+## Jog speed
+Maximum jog speed, with some small ramp-up for precision
+
