@@ -22,7 +22,8 @@ class Config:
 
         self._brake_delay_s = 0.1
         self._max_speed_mps = 0.1
-        self._jog_speed_mps = 0.1
+        self._jog_speed_mps = 0.2
+        self._return_speed_mps = 0.1
 
         self._motor_forward_pin = 22
         self._motor_backward_pin = 23
@@ -63,6 +64,7 @@ class Config:
         self._brake_delay_s = float(power["brake_delay_s"])
         self._max_speed_mps = float(power["max_speed_mps"])
         self._jog_speed_mps = float(power["jog_speed_mps"])
+        self._return_speed_mps = float(power["return_speed_mps"])
 
         # Pin Settings
         pins = config["pins"]
@@ -107,11 +109,14 @@ class Config:
         # Power
         assert 0.01 <= self._brake_delay_s  <= 0.25, "Invalid brake delay"
         assert 0.0 <= self._max_speed_mps < 10.0, "Invalid max speed"
+
         assert 0.0 < self._jog_speed_mps <= 1.0, "Invalid jog speed"
         assert self._jog_speed_mps <= self._max_speed_mps, "Jog speed exceeds max speed"
 
+        assert 0.0 < self._return_speed_mps <= 0.5, "Invalid jog speed"
+        assert self._return_speed_mps <= self._max_speed_mps, "Return speed exceeds max speed"
+
         # Misc
-        assert self._jog_speed_mps <= self._max_speed_mps, "Jog speed exceeds max speed"
         assert 0.0 < self._button_debounce_s < 0.25, "Invalid button debounce value"
 
         # Pins
@@ -168,6 +173,8 @@ class Config:
         return self._max_speed_mps
     def jog_speed_mps(self):
         return self._jog_speed_mps
+    def return_speed_mps(self):
+        return self._return_speed_mps
     def button_debounce_s(self):
         return self._button_debounce_s
     def motor_forward_pin(self):
