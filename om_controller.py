@@ -1,4 +1,5 @@
 import enum
+import functools
 import sys
 import time
 
@@ -14,9 +15,9 @@ import gpiozero
 # 3 AWAIT_GO      | . | e | s | . | G | . | . | J | J | x |
 # 4 RUNNING       | . | . | . | . | . | T | . | . | . | x |
 # 5 STOPPING      | . | T | . | . | . | . | . | . | . | x |
-# 6 RETURNING     | . | e | . | S | . | . | . | J | J | x |
-# 7 FORWARD       | . | e | . | . | . | . | . | . | . | x |
-# 8 BACKWARD      | . | e | . | . | . | . | . | . | . | x |
+# 6 RETURNING     | . | Se| . | . | . | . | . | J | J | x |
+# 7 JOG_FORWARD   | . | e | . | . | . | . | . | . | . | x |
+# 8 JOG_BACKWARD  | . | e | . | . | . | . | . | . | . | x |
 # 9 ERROR         | . | . | . | . | . | . | . | . | . | x |
 
 # I - Inititialize
@@ -40,8 +41,8 @@ import gpiozero
 # 4 RUNNING       | X | H | D | X | . | . | . |
 # 5 STOPPING      | . | . | E | . | . | . | . |
 # 6 RETURNING     | . | L | D | . | X | . | . |
-# 7 FORWARD       | X | L | D | X | . | . | . |
-# 8 BACKWARD      | X | L | D | . | X | . | . |
+# 7 JOG_FORWARD   | X | L | D | X | . | . | . |
+# 8 JOG_BACKWARD  | X | L | D | . | X | . | . |
 # 9 ERROR         | . | . | E | . | . | . | . |
 
 # E - Brake engaged (power off)
@@ -51,6 +52,12 @@ import gpiozero
 # H - High voltage
 
 ACCEPTABLE_LATENCY = 0.1
+
+def log(message):
+    print(message)
+
+def log_error(message):
+    print(message)
 
 # ------------------------------------------------------------------------------
 class OMState(enum.Enum):
@@ -79,9 +86,11 @@ class OMState(enum.Enum):
     ERROR = 9
 
 class Motor:
+    FREQUENCY = 500
+
     def __init__(self, forward_pin, backward_pin, pwm_pin):
         self.direction = gpiozero.Motor(forward_pin, backward_pin)
-        self.speed = gpiozero.PWMOutputDevice(pwm_pin)
+        self.speed = gpiozero.PWMOutputDevice(pwm_pin, frequency=Motor.FREQUENCY)
 
     def forward(self, speed):
         self.set_speed(speed)
@@ -98,9 +107,9 @@ class Motor:
     def is_stopped(self):
         return self.speed.value
 
-    def set_speed(self):
-        raise "Unimplemented"
-        # TODO: Need to be able to do the conversion for speed
+    def set_speed(self, speed):
+        assert 0.0 <= speed <= 1.0
+        self.speed.value = speed
 
 class Brake:
     def __init__(self, pin):
@@ -113,24 +122,34 @@ class Brake:
         self.brake_disengage.on()
 
 class Outputs:
-    def __init__(self):
+    def __init__(self, config):
         # Outputs
         # Pins 12 and 13 are the two PWMs
-        self.motor = Motor(23, 22, 12)
-        self.brake = Brake(24)
-        self.engage_led = gpiozero.LED(6)
-        self.go_led = gpiozero.LED(27)
+        self.motor = Motor(
+                config.motor_forward_pin(),
+                config.motor_backward_pin(),
+                config.motor_speed_pin()
+        )
+        self.brake = Brake(config.brake_pin())
+        self.engage_led = gpiozero.LED(config.engage_led_pin())
+        self.go_led = gpiozero.LED(config.go_led_pin())
 
 class Inputs:
-    def __init__(self):
-        self.engage_button = gpiozero.Button(26)
-        self.go_button = gpiozero.Button(16)
-        self.return_button = gpiozero.Button(13)
-        self.limit_sensor = gpiozero.DigitalInputDevice(5)
-        self.jog_backward = gpiozero.Button(17)
-        self.jog_forward = gpiozero.Button(18)
-        self.rotation_sensor = gpiozero.DigitalInputDevice(20)
-        self.estop_sensor = gpiozero.Button(21)
+    def __init__(self, config):
+        debounce_s = config.button_debounce_s()
+        self.engage_button = gpiozero.Button(config.engage_button_pin(), bounce_time=debounce_s)
+        self.go_button = gpiozero.Button(config.go_button_pin(), bounce_time=debounce_s)
+        self.return_button = gpiozero.Button(config.return_button_pin(), bounce_time=debounce_s)
+        self.jog_backward = gpiozero.Button(config.backward_button_pin(), bounce_time=debounce_s)
+        self.jog_forward = gpiozero.Button(config.forward_button_pin(), bounce_time=debounce_s)
+
+        # TODO: Determine whether this is a sane bounce_time
+        #self.limit_sensor = gpiozero.DigitalInputDevice(config.limit_sensor_pin(), bounce_time=0.1)
+        self.limit_sensor = gpiozero.Button(config.limit_sensor_pin(), bounce_time=0.1)
+        # TODO: Determine whether this is a sane bounce_time
+        #self.rotate_sensor = gpiozero.DigitalInputDevice(config.rotate_sensor_pin(), bounce_time=0.01)
+        self.rotate_sensor = gpiozero.Button(config.rotate_sensor_pin(), bounce_time=0.01)
+        self.estop_sensor = gpiozero.Button(config.estop_sensor_pin())
 
 # ------------------------------------------------------------------------------
 class RunningData:
@@ -164,11 +183,11 @@ class ReturningData:
 class Controller:
     def __init__(self, config):
         """
-        Set defaults from configuration
+        Set defaults from configuration.
         """
         self.config = config
-        self.outputs = Outputs()
-        self.inputs = Inputs()
+        self.outputs = Outputs(config)
+        self.inputs = Inputs(config)
         self.state = OMState.STARTING
         self.to_starting()
 
@@ -176,6 +195,7 @@ class Controller:
         """
         At a high rate, perform reads and ticks.
         """
+        print("Running...")
         while True:
             time.sleep(0.001)
             try:
@@ -184,15 +204,15 @@ class Controller:
                 end = time.monotonic()
                 if end - start > ACCEPTABLE_LATENCY:
                     self.error(f"Timeout due to latency: {end - start}")
-            except:
-                self.error("Bad things happened")
+            except Exception as e:
+                self.error(f"Unhandled exception: {e}")
 
     def error(self, message):
         """
         Print a message if possible then shut down the system as thoroughly as possible and exit.
         """
         try:
-            self.log.error(message)
+            log_error(message)
         finally:
             self.state = OMState.ERROR
             self.outputs.brake.engage()
@@ -202,57 +222,186 @@ class Controller:
 
     # ----------------------------------------
     # Events
-    def on_engage_press(self):
+    def on_engage_activated(self):
+        log("Event:	Engage Activated")
+        if self.state == OMState.AWAIT_ENGAGE:
+            self.from_await_engage_to_await_set()
+        # It should not be possible to press the engage button in any other state
+        else:
+            self.error(f"Somehow the engage button was pressed while in state {self.state}")
+
+    def on_engage_deactivated(self):
+        log("Event:	Engage Deactivated")
+        if self.state == OMState.AWAIT_SET:
+            self.from_await_set_to_await_engage()
+        elif self.state == OMState.AWAIT_GO:
+            self.from_await_go_to_await_engage()
+        elif self.state == OMState.RETURNING:
+            self.from_returning_to_await_engage()
+        elif self.state == OMState.JOG_FORWARD:
+            self.from_jog_forward_to_await_engage()
+        elif self.state == OMState.JOG_BACKWARD:
+            self.from_jog_backward_to_await_engage()
+        # These cases are special cases where we can release the engage button
+        # without triggering anything bad happening.
+        #
+        # Put a different way, the engage button need only be held while the user
+        # is initiating a movement or actively continuing one (jog).
+        elif self.state in [OMState.RUNNING, OMState.STOPPING, OMState.RETURNING]:
+            pass
+        else:
+            self.error(f"Somehow the engage button was released while in state {self.state}")
+
+    # --------------------
+    def on_limit_activated(self):
+        log("Event:	Limit Activated")
+        if self.state == OMState.STARTING:
+            pass
+        elif self.state == OMState.AWAIT_ENGAGE:
+            # FIXME: Is this a possible state?  Momentum?  Pulling the line while on the tube?
+            pass
+        elif self.state == OMState.AWAIT_SET:
+            self.from_await_set_to_await_go()
+        elif self.state == OMState.RETURNING:
+            self.from_returning_to_await_engage()
+        elif self.state == OMState.JOG_BACKWARD:
+            self.from_jog_backward_to_await_engage()
+        elif self.state == OMState.JOG_FORWARD:
+            self.from_jog_forward_to_await_engage()
+        else:
+            self.error(f"Somehow the limit was triggered while in state {self.state}")
+
+    def on_limit_deactivated(self):
+        log("Event:	Limit Deactivated")
+        if self.state == OMState.AWAIT_GO:
+            self.from_await_go_to_await_set()
+        elif self.state == OMState.AWAIT_ENGAGE:
+            # FIXME: Is this a possible state?  Manually goofing up the state?
+            pass
+        elif self.state == OMState.RUNNING:
+            # Someone is about to have fun.
+            pass
+        elif self.state in [OMState.RUNNING, OMState.JOG_FORWARD, OMState.JOG_BACKWARD]:
+            pass
+        else:
+            self.error(f"Somehow the limit was released while in state {self.state}")
+
+    # --------------------
+    def on_go_activated(self):
+        log("Event:	Go Activated")
+        if self.state == OMState.AWAIT_GO:
+            self.from_await_go_to_running()
+        elif self.state in [OMState.RUNNING, OMState.STOPPING, OMState.RETURNING]:
+            # We allow and ignore go press when we're already going
+            pass
         pass
 
-    def on_engage_release(self):
+    def on_go_deactivated(self):
+        log("Event:	Go Deactivated")
+        # TODO: Should anything happen when go is released?
+        # Should we actually trigger the press on release?
         pass
 
     # --------------------
-    def on_go_press(self):
-        pass
+    def on_return_activated(self):
+        log("Event:	Return Activated")
+        if self.state == OMState.AWAIT_SET:
+            self.from_await_set_to_returning()
+        elif self.inputs.limit_sensor.value:
+            log("Can't return when we're already returned.")
+        elif self.state in [OMState.RUNNING, OMState.STOPPING, OMState.RETURNING]:
+            # We allow and ignore return presses when we're already going
+            pass
 
-    def on_go_release(self):
-        pass
-
-    # --------------------
-    def on_return_press(self):
-        pass
-
-    def on_return_release(self):
-        pass
-
-    # --------------------
-    def on_estop_press(self):
-        pass
-
-    def on_estop_release(self):
+    def on_return_deactivated(self):
+        log("Event:	Return Deactivated")
+        # TODO: Should anything happen when return is released?
+        # Should we actually trigger the press on release?
         pass
 
     # --------------------
-    def on_backward_press(self):
-        pass
+    def on_estop_activated(self):
+        self.error("E-Stop Press")
 
-    def on_backward_release(self):
-        pass
-
-    # --------------------
-    def on_forward_press(self):
-        pass
-
-    def on_forward_release(self):
-        pass
+    def on_estop_deactivated(self):
+        self.error("E-Stop Release")
 
     # --------------------
-    def on_limit_press(self):
-        pass
+    def on_jog_backward_activated(self):
+        log("Event:	Jog Backward Activated")
+        if self.state == OMState.AWAIT_ENGAGE:
+            log("Can't jog backward without engage set.")
+        elif self.state == OMState.AWAIT_SET:
+            self.from_await_set_to_jog_backward()
+        elif self.state == OMState.AWAIT_GO:
+            self.from_await_go_to_jog_backward()
+        elif self.state in [OMState.RUNNING, OMState.STOPPING]:
+            # Jog switch is ignored while running
+            pass
+        elif self.state == OMState.RETURNING:
+            # TODO: Consider whether this is a good idea.
+            # We allow the user to initiate a jog while returning
+            # which allows jog without hitting the engage switch.
+            #
+            # When they release the jog, the system will brake
+            # as it enters await_engage.  This too may be slightly
+            # undesirable as it might be nice to have a grace period
+            # wherein the user can jog forward, backward a bit until
+            # they get to just where they want.
+            self.from_returning_to_jog_backward()
+        else:
+            pass
 
-    def on_limit_release(self):
-        pass
+    def on_jog_backward_deactivated(self):
+        log("Event:	Jog Backward Deactivated")
+        if self.state == OMState.JOG_BACKWARD:
+            self.from_jog_backward_to_await_engage()
+        # TODO: Consider with a brain that has had additional sleep.
+        # If the user has engage depressed, starts jogging, and releases
+        # engage, the system will be put into a safe state, but the jog
+        # is still activated.  Releasing it should have no effect that releasing
+        # engage didn't already have.
+        else:
+            #self.error(f"Unexpected jog backward release while in state {self.state}")
+            pass
 
     # --------------------
-    def on_rotate(self):
-        pass
+    def on_jog_forward_activated(self):
+        log("Event:	Jog Forward Activated")
+        if self.state == OMState.AWAIT_ENGAGE:
+            log("Can't jog forward without engage set.")
+        elif self.state == OMState.AWAIT_SET:
+            self.from_await_set_to_jog_forward()
+        elif self.state == OMState.AWAIT_GO:
+            self.from_await_go_to_jog_forward()
+        elif self.state in [OMState.RUNNING, OMState.STOPPING]:
+            # Jog switch is ignored while running
+            pass
+        elif self.state == OMState.RETURNING:
+            # See notes in on_jog_backward_activated
+            self.from_returning_to_jog_forward()
+        else:
+            pass
+
+    def on_jog_forward_deactivated(self):
+        log("Event:	Jog Forward Deactivated")
+        if self.state == OMState.JOG_FORWARD:
+            self.from_jog_forward_to_await_engage()
+        # If the user has engage depressed, starts jogging, and releases
+        # engage, the system will be put into a safe state, but the jog
+        # is still activated.  Releasing it should have no effect that releasing
+        # engage didn't already have.
+        else:
+            #self.error(f"Unexpected jog forward release while in state {self.state}")
+            pass
+
+    # --------------------
+    def on_rotate_activated(self):
+        log("Event:	Rotate Magnet On")
+
+    # --------------------
+    def on_rotate_deactivated(self):
+        log("Event:	Rotate Magnet Off")
 
     # ----------------------------------------
     def tick(self):
@@ -277,17 +426,76 @@ class Controller:
     def do_starting(self):
         if self.state != OMState.STARTING:
             self.error(f"Request to start in invalid state {self.state}")
+        self.transition(OMState.AWAIT_ENGAGE)
 
     def do_await_engage(self):
         self.state = OMState.AWAIT_ENGAGE
         self.outputs.engage_led.on()
 
-    # ----------------------------------------
+    def do_await_set(self):
+        pass
+
+    def do_await_go(self):
+        pass
+
+    def do_running(self):
+        # FIXME: I need to track the running state
+        pass
+
+    def do_stopping(self):
+        # FIXME: I need to track the stopping state
+        pass
+
+    def do_returning(self):
+        # FIXME: I need to track the returning state
+        pass
+
+    def do_jog_forward(self):
+        pass
+
+    def do_jog_backward(self):
+        pass
+
+    def do_error(self):
+        # FIXME: Why does this ever trigger?
+        self.error("Found running in error state")
+
+    # ----------------------------------------------------------
+    def setup_events(self):
+        self.inputs.engage_button.when_activated = self.on_engage_activated
+        self.inputs.engage_button.when_deactivated = self.on_engage_deactivated
+
+        self.inputs.go_button.when_activated = self.on_go_activated
+        self.inputs.go_button.when_deactivated = self.on_go_deactivated
+
+        self.inputs.return_button.when_activated = self.on_return_activated
+        self.inputs.return_button.when_deactivated = self.on_return_deactivated
+
+        self.inputs.jog_backward.when_activated = self.on_jog_backward_activated
+        self.inputs.jog_backward.when_deactivated = self.on_jog_backward_deactivated
+
+        self.inputs.jog_forward.when_activated = self.on_jog_forward_activated
+        self.inputs.jog_forward.when_deactivated = self.on_jog_forward_deactivated
+
+        self.inputs.limit_sensor.when_activated = self.on_limit_activated
+        self.inputs.limit_sensor.when_deactivated = self.on_limit_deactivated
+
+        # This probably needs some special software debouncing
+        self.inputs.rotate_sensor.when_activated = self.on_rotate_activated
+        self.inputs.rotate_sensor.when_deactivated = self.on_rotate_deactivated
+
+        self.inputs.estop_sensor.when_activated = self.on_estop_activated
+        self.inputs.estop_sensor.when_deactivated = self.on_estop_deactivated
+
+
+    # ----------------------------------------------------------
     # Each valid transition
     def to_starting(self):
+        self.state = OMState.STARTING
         # Indicate startup by engaging both leds
         self.outputs.engage_led.on()
         self.outputs.go_led.on()
+        self.setup_events()
 
     def from_starting(self):
         self.outputs.engage_led.off()
@@ -295,9 +503,12 @@ class Controller:
 
     # ----------------------------------------------------------
     def to_await_engage(self):
+        self.state = OMState.AWAIT_ENGAGE
         self.outputs.motor.stop()
         self.outputs.brake.engage()
         self.outputs.engage_led.on()
+        if self.inputs.engage_button.value:
+            self.from_await_engage_to_await_set()
 
     def from_await_engage(self):
         # This should occur when the user begins holding down the engage
@@ -307,43 +518,25 @@ class Controller:
 
     # ----------------------------------------------------------
     def to_await_set(self):
+        self.state = OMState.AWAIT_SET
         self.outputs.go_led.blink(on_time=1.0, off_time=1.0)
+        if self.inputs.limit_sensor.value:
+            self.from_await_set_to_await_go()
 
     def from_await_set(self):
         self.outputs.go_led.off()
 
     # ----------------------------------------------------------
     def to_await_go(self):
+        self.state = OMState.AWAIT_GO
         self.outputs.go_led.on()
 
     def from_await_go(self):
         self.outputs.go_led.off()
 
     # ----------------------------------------------------------
-    def to_returning(self):
-        self.return_data = ReturnData()
-
-    def from_returning(self):
-        self.outputs.motor.stop()
-
-    # ----------------------------------------------------------
-    def to_jog_forward(self):
-        #self.outputs.motor.set_speed(config.max_jog_speed)
-        self.outputs.motor.forward(config.max_jog_speed)
-
-    def from_jog_forward(self):
-        self.outputs.motor.stop()
-
-    # ----------------------------------------------------------
-    def to_jog_backward(self):
-        #self.outputs.motor.set_speed(config.max_jog_speed)
-        self.outputs.motor.backward(config.max_jog_speed)
-
-    def from_jog_backward(self):
-        self.outputs.motor.stop()
-
-    # ----------------------------------------------------------
     def to_running(self):
+        self.state = OMState.RUNNING
         # Reinitialize running data
         self.running_data = RunningData()
 
@@ -352,7 +545,8 @@ class Controller:
 
     # ----------------------------------------------------------
     def to_stopping(self):
-        # Reinitialize running data
+        self.state = OMState.STOPPING
+        # Reinitialize stopping data
         self.stopping_data = StoppingData()
         self.outputs.brake.engage()
         self.outputs.motor.off()
@@ -361,57 +555,74 @@ class Controller:
         print(self.stopping_data)
 
     # ----------------------------------------------------------
+    def to_returning(self):
+        self.state = OMState.RETURNING
+        self.return_data = ReturningData()
+
+    def from_returning(self):
+        self.outputs.motor.stop()
+
+    # ----------------------------------------------------------
     def to_jog_forward(self):
-        self.outputs.brake.disengage()
-        self.outputs.motor.set_speed(self.config.jog_speed_mps)
+        self.state = OMState.JOG_FORWARD
+        self.outputs.motor.forward(self.config.jog_speed_mps())
 
     def from_jog_forward(self):
         # Note: We don't put the brakes on
-        pass
+        self.outputs.motor.stop()
 
     # ----------------------------------------------------------
     def to_jog_backward(self):
-        self.outputs.brake.disengage()
-        self.outputs.motor.set_speed(self.config.jog_speed_mps)
+        self.state = OMState.JOG_BACKWARD
+        self.outputs.motor.backward(self.config.jog_speed_mps())
 
     def from_jog_backward(self):
         # Note: We don't put the brakes on
-        pass
+        self.outputs.motor.stop()
 
     # ----------------------------------------------------------
     def from_starting_to_await_engage(self):
+        log("State:	starting	->	await_engage")
         self.from_starting()
         self.to_await_engage()
 
     def from_await_engage_to_await_set(self):
+        log("State:	await_engage	->	await_set")
         self.from_await_engage()
         self.to_await_set()
 
     def from_await_set_to_await_engage(self):
+        log("State:	await_set	->	await_engage")
         self.from_await_set()
         self.to_await_engage()
 
     def from_await_set_to_await_go(self):
+        log("State:	await_set	->	await_go")
         self.from_await_set()
         self.to_await_go()
 
     def from_await_set_to_returning(self):
+        log("State:	await_set	->	returning")
         self.from_await_set()
         self.to_returning()
 
     def from_await_set_to_jog_forward(self):
+        log("State:	await_set	->	jog_forward")
         self.from_await_set()
         self.to_jog_forward()
 
     def from_await_set_to_jog_backward(self):
+        log("State:	await_set	->	jog_backward")
         self.from_await_set()
         self.to_jog_backward()
 
     def from_await_go_to_await_engage(self):
-        self.from_wait_go()
+        log("State:	await_go	->	await_engage")
+        self.from_await_go()
         self.to_await_engage()
 
     def from_await_go_to_await_set(self):
+        log("State:	await_go	->	await_set")
         # This is an unusual transition because it would need to be caused
         # by the limit sensor becoming unset while the motor is not moving
         # the machine.
@@ -420,42 +631,57 @@ class Controller:
         self.to_await_set()
 
     def from_await_go_to_running(self):
+        log("State:	await_go	->	running")
         self.from_await_go()
         self.to_running()
 
     def from_await_go_to_jog_forward(self):
+        log("State:	await_go	->	jog_forward")
         self.from_await_go()
         self.to_jog_forward()
 
     def from_await_go_to_jog_backward(self):
+        log("State:	await_go	->	jog_backward")
         self.from_await_go()
         self.to_jog_backward()
 
     def from_running_to_stopping(self):
+        log("State:	running 	->	stopping")
         self.from_running()
         self.to_stopping()
 
     def from_stopping_to_await_engage(self):
+        log("State:	stopping	->	await_engage")
         self.from_stopping()
         self.to_await_engage()
 
     def from_returning_to_await_engage(self):
+        log("State:	returning	->	await_engage")
         self.from_returning()
         self.to_await_engage()
 
-    def from_returning_to_await_go(self):
-        self.from_returning()
-        self.to_await_go()
+    #!def from_returning_to_await_go(self):
+    #!    log("State:	returning	->	await_go")
+    #!    self.from_returning()
+    #!    self.to_await_go()
 
     def from_returning_to_jog_forward(self):
+        log("State:	returning	->	jog_forward")
         self.from_returning()
         self.to_jog_forward()
 
+    def from_returning_to_jog_backward(self):
+        log("State:	returning	->	jog_backward")
+        self.from_returning()
+        self.to_jog_backward()
+
     def from_jog_forward_to_await_engage(self):
+        log("State:	jog_forward	->	await_engage")
         self.from_jog_forward()
         self.to_await_engage()
 
     def from_jog_backward_to_await_engage(self):
+        log("State:	jog_back	->	await_engage")
         self.from_jog_backward()
         self.to_await_engage()
 
