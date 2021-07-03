@@ -379,9 +379,9 @@ class Controller:
         elif self.state == OMState.RETURNING:
             self.returning_data.revolve()
         elif self.state == OMState.JOG_FORWARD:
-            self.jog_backward_data.revolve()
-        elif self.state == OMState.JOG_BACKWARD:
             self.jog_forward_data.revolve()
+        elif self.state == OMState.JOG_BACKWARD:
+            self.jog_backward_data.revolve()
 
     # --------------------
     def on_rotate_deactivated(self):
@@ -592,10 +592,10 @@ class Controller:
         # Note: We don't put the brakes on
         self.outputs.motor.stop()
         print(f"Statistics for Jog Forward:")
-        print(f"     Distance:	{self.returning_data.distance_m()}m")
-        print(f"     Duration:	{self.returning_data.duration()}s")
-        print(f"  Revolutions:	{self.returning_data.revolutions()}")
-        print(f"    Max Speed:	{self.returning_data.max_speed_mps()}m/s")
+        print(f"     Distance:	{self.jog_forward_data.distance_m()}m")
+        print(f"     Duration:	{self.jog_forward_data.duration()}s")
+        print(f"  Revolutions:	{self.jog_forward_data.revolutions()}")
+        print(f"    Max Speed:	{self.jog_forward_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def to_jog_backward(self):
@@ -612,10 +612,10 @@ class Controller:
         # Note: We don't put the brakes on
         self.outputs.motor.stop()
         print(f"Statistics for Jog Backward:")
-        print(f"     Distance:	{self.returning_data.distance_m()}m")
-        print(f"     Duration:	{self.returning_data.duration()}s")
-        print(f"  Revolutions:	{self.returning_data.revolutions()}")
-        print(f"    Max Speed:	{self.returning_data.max_speed_mps()}m/s")
+        print(f"     Distance:	{self.jog_backward_data.distance_m()}m")
+        print(f"     Duration:	{self.jog_backward_data.duration()}s")
+        print(f"  Revolutions:	{self.jog_backward_data.revolutions()}")
+        print(f"    Max Speed:	{self.jog_backward_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def from_starting_to_await_engage(self):
