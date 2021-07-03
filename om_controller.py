@@ -13,7 +13,7 @@ from om_operation import Operation
 # From             0S  1AE 2AS 3AG 4RU 5ST 6RT 7JF 8JR 9ER
 # ----------------+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 # 0 STARTING      | . | I | . | . | . | . | . | . | . | x |
-# 1 AWAIT_ENGAGE  | . | . | E | . | . | . | . | . | . | x |
+# 1 SAFE          | . | . | E | . | . | . | . | . | . | x |
 # 2 AWAIT_SET     | . | e | . | S | . | . | R | J | J | x |
 # 3 AWAIT_GO      | . | e | s | . | G | . | . | J | J | x |
 # 4 RUNNING       | . | . | . | . | . | T | . | . | . | x |
@@ -38,7 +38,7 @@ from om_operation import Operation
 #                  Mot Vol Brk Fwd Rev ELt GLt 
 # ----------------+---+---+---+---+---+---+---+
 # 0 STARTING      | . | . | E | . | . | X | X |
-# 1 AWAIT_ENGAGE  | . | . | D | . | . | X | . |
+# 1 SAFE          | . | . | D | . | . | X | . |
 # 2 AWAIT_SET     | . | . | D | . | . | . | . |
 # 3 AWAIT_GO      | . | . | D | . | . | . | X |
 # 4 RUNNING       | X | H | D | X | . | . | . |
@@ -68,7 +68,8 @@ class OMState(enum.Enum):
     # Moves out of startup after all possible IO has been found and checked.
     STARTING = 0
     # Default state when the engage switch is NOT actively depressed
-    AWAIT_ENGAGE = 1
+    # Ensures brake is set and motor is off
+    SAFE = 1
     # State when engage is set and we're not jogging and we're not set
     AWAIT_SET = 2
     # State when we're engaged and set and not jogging
@@ -217,8 +218,10 @@ class Controller:
     def on_engage_activated(self):
         with self.rlock:
             log("Event:	Engage Activated")
-            if self.state == OMState.AWAIT_ENGAGE:
-                self.from_await_engage_to_await_set()
+            if self.state == OMState.SAFE:
+                self.from_safe_to_await_set()
+            elif self.state in [OMState.RUNNING, OMState.STOPPING, OMState.RETURNING]:
+                pass
             # It should not be possible to press the engage button in any other state
             else:
                 self.error(f"Somehow the engage button was pressed while in state {self.state}")
@@ -227,15 +230,15 @@ class Controller:
         with self.rlock:
             log("Event:	Engage Deactivated")
             if self.state == OMState.AWAIT_SET:
-                self.from_await_set_to_await_engage()
+                self.from_await_set_to_safe()
             elif self.state == OMState.AWAIT_GO:
-                self.from_await_go_to_await_engage()
+                self.from_await_go_to_safe()
             elif self.state == OMState.RETURNING:
-                self.from_returning_to_await_engage()
+                self.from_returning_to_safe()
             elif self.state == OMState.JOG_FORWARD:
-                self.from_jog_forward_to_await_engage()
+                self.from_jog_forward_to_safe()
             elif self.state == OMState.JOG_BACKWARD:
-                self.from_jog_backward_to_await_engage()
+                self.from_jog_backward_to_safe()
             # These cases are special cases where we can release the engage button
             # without triggering anything bad happening.
             #
@@ -244,7 +247,7 @@ class Controller:
             elif self.state in [OMState.RUNNING, OMState.STOPPING, OMState.RETURNING]:
                 pass
             else:
-                self.error(f"Somehow the engage button was released while in state {self.state}")
+                log(f"Warn: Somehow the engage button was released while in state {self.state}")
 
     # --------------------
     def on_limit_activated(self):
@@ -252,17 +255,17 @@ class Controller:
             log("Event:	Limit Activated")
             if self.state == OMState.STARTING:
                 pass
-            elif self.state == OMState.AWAIT_ENGAGE:
+            elif self.state == OMState.SAFE:
                 # FIXME: Is this a possible state?  Momentum?  Pulling the line while on the tube?
                 pass
             elif self.state == OMState.AWAIT_SET:
                 self.from_await_set_to_await_go()
             elif self.state == OMState.RETURNING:
-                self.from_returning_to_await_engage()
+                self.from_returning_to_safe()
             elif self.state == OMState.JOG_BACKWARD:
-                self.from_jog_backward_to_await_engage()
+                self.from_jog_backward_to_safe()
             elif self.state == OMState.JOG_FORWARD:
-                self.from_jog_forward_to_await_engage()
+                self.from_jog_forward_to_safe()
             else:
                 self.error(f"Somehow the limit was triggered while in state {self.state}")
 
@@ -271,7 +274,7 @@ class Controller:
             log("Event:	Limit Deactivated")
             if self.state == OMState.AWAIT_GO:
                 self.from_await_go_to_await_set()
-            elif self.state == OMState.AWAIT_ENGAGE:
+            elif self.state == OMState.SAFE:
                 # FIXME: Is this a possible state?  Manually goofing up the state?
                 pass
             elif self.state == OMState.RUNNING:
@@ -330,40 +333,44 @@ class Controller:
     def on_jog_backward_activated(self):
         with self.rlock:
             log("Event:	Jog Backward Activated")
-            if self.state == OMState.AWAIT_ENGAGE:
-                log("Warn:  Can't jog backward without engage set.")
-            elif self.state == OMState.AWAIT_SET:
-                self.from_await_set_to_jog_backward()
-            elif self.state == OMState.AWAIT_GO:
-                self.from_await_go_to_jog_backward()
-            elif self.state in [OMState.RUNNING, OMState.STOPPING]:
-                # Jog switch is ignored while running
-                pass
-            elif self.state == OMState.RETURNING:
-                # TODO: Consider whether this is a good idea.
-                # We allow the user to initiate a jog while returning
-                # which allows jog without hitting the engage switch.
-                #
-                # When they release the jog, the system will brake
-                # as it enters await_engage.  This too may be slightly
-                # undesirable as it might be nice to have a grace period
-                # wherein the user can jog forward, backward a bit until
-                # they get to just where they want.
-                self.from_returning_to_jog_backward()
+            if self.inputs.limit_sensor.value:
+                log("Warn:  Ignoring jog backward request due to limit switch")
             else:
-                pass
+                if self.state == OMState.SAFE:
+                    log("Warn:  Can't jog backward without engage set.")
+                elif self.state == OMState.AWAIT_SET:
+                    self.from_await_set_to_jog_backward()
+                elif self.state == OMState.AWAIT_GO:
+                    self.from_await_go_to_jog_backward()
+                elif self.state in [OMState.RUNNING, OMState.STOPPING]:
+                    # Jog switch is ignored while running
+                    pass
+                elif self.state == OMState.RETURNING:
+                    # TODO: Consider whether this is a good idea.
+                    # We allow the user to initiate a jog while returning
+                    # which allows jog without hitting the engage switch.
+                    #
+                    # When they release the jog, the system will brake
+                    # as it enters safe.  This too may be slightly
+                    # undesirable as it might be nice to have a grace period
+                    # wherein the user can jog forward, backward a bit until
+                    # they get to just where they want.
+                    self.from_returning_to_jog_backward()
+                else:
+                    pass
 
     def on_jog_backward_deactivated(self):
         with self.rlock:
             log("Event:	Jog Backward Deactivated")
             if self.state == OMState.JOG_BACKWARD:
-                self.from_jog_backward_to_await_engage()
+                self.from_jog_backward_to_safe()
             # TODO: Consider with a brain that has had additional sleep.
             # If the user has engage depressed, starts jogging, and releases
             # engage, the system will be put into a safe state, but the jog
             # is still activated.  Releasing it should have no effect that releasing
             # engage didn't already have.
             else:
+                log("Warn:  System wasn't in jog_backward state when jog released")
                 #self.error(f"Unexpected jog backward release while in state {self.state}")
                 pass
 
@@ -371,7 +378,7 @@ class Controller:
     def on_jog_forward_activated(self):
         with self.rlock:
             log("Event:	Jog Forward Activated")
-            if self.state == OMState.AWAIT_ENGAGE:
+            if self.state == OMState.SAFE:
                 log("Warn:  Can't jog forward without engage set.")
             elif self.state == OMState.AWAIT_SET:
                 self.from_await_set_to_jog_forward()
@@ -390,7 +397,7 @@ class Controller:
         with self.rlock:
             log("Event:	Jog Forward Deactivated")
             if self.state == OMState.JOG_FORWARD:
-                self.from_jog_forward_to_await_engage()
+                self.from_jog_forward_to_safe()
             # If the user has engage depressed, starts jogging, and releases
             # engage, the system will be put into a safe state, but the jog
             # is still activated.  Releasing it should have no effect that releasing
@@ -427,7 +434,7 @@ class Controller:
         with self.rlock:
             action = {
                 OMState.STARTING: self.do_starting,
-                OMState.AWAIT_ENGAGE: self.do_await_engage,
+                OMState.SAFE: self.do_safe,
                 OMState.AWAIT_SET: self.do_await_set,
                 OMState.AWAIT_GO: self.do_await_go,
                 OMState.RUNNING: self.do_running,
@@ -443,10 +450,10 @@ class Controller:
     def do_starting(self):
         if self.state != OMState.STARTING:
             self.error(f"Request to start in invalid state {self.state}")
-        self.from_starting_to_await_engage()
+        self.from_starting_to_safe()
 
-    def do_await_engage(self):
-        self.state = OMState.AWAIT_ENGAGE
+    def do_safe(self):
+        self.state = OMState.SAFE
         self.outputs.engage_led.on()
 
     def do_await_set(self):
@@ -515,15 +522,15 @@ class Controller:
         self.outputs.go_led.off()
 
     # ----------------------------------------------------------
-    def to_await_engage(self):
-        self.state = OMState.AWAIT_ENGAGE
+    def to_safe(self):
+        self.state = OMState.SAFE
         self.outputs.motor.stop()
         self.outputs.brake.engage()
         self.outputs.engage_led.on()
         if self.inputs.engage_button.value:
-            self.from_await_engage_to_await_set()
+            self.from_safe_to_await_set()
 
-    def from_await_engage(self):
+    def from_safe(self):
         # This should occur when the user begins holding down the engage
         # button.  This indicates that the system is free to begin movement.
         self.outputs.engage_led.off()
@@ -575,7 +582,7 @@ class Controller:
         # TODO: Should this be the config setting instead of brake_delay_s?
         timeout_s = 5.0
         pulley_diameter_m = self.config.pulley_diameter_m()
-        self.stopping_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_stopping_to_await_engage)
+        self.stopping_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_stopping_to_safe)
 
     def from_stopping(self):
         self.move_position(self.stopping_data.distance_m())
@@ -594,7 +601,7 @@ class Controller:
         length_m = self.config.accel_length_m()
         timeout_s = None
         pulley_diameter_m = self.config.pulley_diameter_m()
-        self.returning_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_returning_to_await_engage)
+        self.returning_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_returning_to_safe)
 
     def from_returning(self):
         self.outputs.motor.stop()
@@ -611,7 +618,7 @@ class Controller:
         length_m = self.config.length_m()
         timeout_s = None
         pulley_diameter_m = self.config.pulley_diameter_m()
-        self.jog_forward_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_jog_forward_to_await_engage)
+        self.jog_forward_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_jog_forward_to_safe)
 
     def from_jog_forward(self):
         # Note: We don't put the brakes on
@@ -629,7 +636,7 @@ class Controller:
         length_m = self.config.length_m()
         timeout_s = None
         pulley_diameter_m = self.config.pulley_diameter_m()
-        self.jog_backward_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_jog_backward_to_await_engage)
+        self.jog_backward_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_jog_backward_to_safe)
 
     def from_jog_backward(self):
         # Note: We don't put the brakes on
@@ -638,23 +645,23 @@ class Controller:
         self.log_movement(self.jog_backward_data, "Jog Backward")
 
     # ----------------------------------------------------------
-    def from_starting_to_await_engage(self):
+    def from_starting_to_safe(self):
         with self.rlock:
-            log("State:	starting	->	await_engage")
+            log("State:	starting	->	safe")
             self.from_starting()
-            self.to_await_engage()
+            self.to_safe()
 
-    def from_await_engage_to_await_set(self):
+    def from_safe_to_await_set(self):
         with self.rlock:
-            log("State:	await_engage	->	await_set")
-            self.from_await_engage()
+            log("State:	safe	->	await_set")
+            self.from_safe()
             self.to_await_set()
 
-    def from_await_set_to_await_engage(self):
+    def from_await_set_to_safe(self):
         with self.rlock:
-            log("State:	await_set	->	await_engage")
+            log("State:	await_set	->	safe")
             self.from_await_set()
-            self.to_await_engage()
+            self.to_safe()
 
     def from_await_set_to_await_go(self):
         with self.rlock:
@@ -680,11 +687,11 @@ class Controller:
             self.from_await_set()
             self.to_jog_backward()
 
-    def from_await_go_to_await_engage(self):
+    def from_await_go_to_safe(self):
         with self.rlock:
-            log("State:	await_go	->	await_engage")
+            log("State:	await_go	->	safe")
             self.from_await_go()
-            self.to_await_engage()
+            self.to_safe()
 
     def from_await_go_to_await_set(self):
         with self.rlock:
@@ -720,17 +727,17 @@ class Controller:
             self.from_running()
             self.to_stopping()
 
-    def from_stopping_to_await_engage(self):
+    def from_stopping_to_safe(self):
         with self.rlock:
-            log("State:	stopping	->	await_engage")
+            log("State:	stopping	->	safe")
             self.from_stopping()
-            self.to_await_engage()
+            self.to_safe()
 
-    def from_returning_to_await_engage(self):
+    def from_returning_to_safe(self):
         with self.rlock:
-            log("State:	returning	->	await_engage")
+            log("State:	returning	->	safe")
             self.from_returning()
-            self.to_await_engage()
+            self.to_safe()
 
     #!def from_returning_to_await_go(self):
     #!    log("State:	returning	->	await_go")
@@ -749,15 +756,15 @@ class Controller:
             self.from_returning()
             self.to_jog_backward()
 
-    def from_jog_forward_to_await_engage(self):
+    def from_jog_forward_to_safe(self):
         with self.rlock:
-            log("State:	jog_forward	->	await_engage")
+            log("State:	jog_forward	->	safe")
             self.from_jog_forward()
-            self.to_await_engage()
+            self.to_safe()
 
-    def from_jog_backward_to_await_engage(self):
+    def from_jog_backward_to_safe(self):
         with self.rlock:
-            log("State:	jog_back	->	await_engage")
+            log("State:	jog_back	->	safe")
             self.from_jog_backward()
-            self.to_await_engage()
+            self.to_safe()
 
