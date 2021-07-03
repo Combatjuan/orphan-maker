@@ -5,6 +5,8 @@ import time
 
 import gpiozero
 
+from om_operation import Operation
+
 # ------------------------------------------------------------------------------
 # State Transition Matrix
 # From             0S  1AE 2AS 3AG 4RU 5ST 6RT 7JF 8JR 9ER
@@ -150,34 +152,6 @@ class Inputs:
         #self.rotate_sensor = gpiozero.DigitalInputDevice(config.rotate_sensor_pin(), bounce_time=0.01)
         self.rotate_sensor = gpiozero.Button(config.rotate_sensor_pin(), bounce_time=0.01)
         self.estop_sensor = gpiozero.Button(config.estop_sensor_pin())
-
-# ------------------------------------------------------------------------------
-class RunningData:
-    def __init(self):
-        self.start_time = time.monotonic()
-        self.revolutions = 0.0
-        self.distance = 0.0
-        # TODO: Set up a Kalman filter or something to try and keep track of position
-
-class StoppingData:
-    def __init(self):
-        self.start_time = time.monotonic()
-        self.revolutions = 0.0
-        self.distance = 0.0
-        # TODO: Set up a Kalman filter or something to try and keep track of position
-
-    def duration(self):
-        return time.monotonic() - self.start_time
-
-class ReturningData:
-    def __init(self):
-        self.start_time = time.monotonic()
-        self.revolutions = 0.0
-        self.distance = 0.0
-        # TODO: Set up a Kalman filter or something to try and keep track of position
-
-    def duration(self):
-        return time.monotonic() - self.start_time
 
 # ------------------------------------------------------------------------------
 class Controller:
@@ -398,6 +372,16 @@ class Controller:
     # --------------------
     def on_rotate_activated(self):
         log("Event:	Rotate Magnet On")
+        if self.state == OMState.RUNNING:
+            self.running_data.revolve()
+        elif self.state == OMState.STOPPING:
+            self.stopping_data.revolve()
+        elif self.state == OMState.RETURNING:
+            self.returning_data.revolve()
+        elif self.state == OMState.JOG_FORWARD:
+            self.jog_backward_data.revolve()
+        elif self.state == OMState.JOG_BACKWARD:
+            self.jog_forward_data.revolve()
 
     # --------------------
     def on_rotate_deactivated(self):
@@ -426,7 +410,7 @@ class Controller:
     def do_starting(self):
         if self.state != OMState.STARTING:
             self.error(f"Request to start in invalid state {self.state}")
-        self.transition(OMState.AWAIT_ENGAGE)
+        self.from_starting_to_await_engage()
 
     def do_await_engage(self):
         self.state = OMState.AWAIT_ENGAGE
@@ -439,22 +423,19 @@ class Controller:
         pass
 
     def do_running(self):
-        # FIXME: I need to track the running state
-        pass
+        self.running_data.tick()
 
     def do_stopping(self):
-        # FIXME: I need to track the stopping state
-        pass
+        self.stopping_data.tick()
 
     def do_returning(self):
-        # FIXME: I need to track the returning state
-        pass
+        self.returning_data.tick()
 
     def do_jog_forward(self):
-        pass
+        self.jog_forward_data.tick()
 
     def do_jog_backward(self):
-        pass
+        self.jog_backward_data.tick()
 
     def do_error(self):
         # FIXME: Why does this ever trigger?
@@ -486,7 +467,6 @@ class Controller:
 
         self.inputs.estop_sensor.when_activated = self.on_estop_activated
         self.inputs.estop_sensor.when_deactivated = self.on_estop_deactivated
-
 
     # ----------------------------------------------------------
     # Each valid transition
@@ -537,48 +517,105 @@ class Controller:
     # ----------------------------------------------------------
     def to_running(self):
         self.state = OMState.RUNNING
-        # Reinitialize running data
-        self.running_data = RunningData()
+
+        length_m = self.config.accel_length_m()
+        # FIXME: Should this be some large value?
+        timeout_s = None
+        pulley_diameter_m = self.config.pulley_diameter_m()
+        self.running_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_running_to_stopping)
 
     def from_running(self):
-        self.outputs.motor.off()
+        self.outputs.motor.stop()
+        print(f"Statistics for Run:")
+        print(f"     Distance:	{self.running_data.distance_m()}m")
+        print(f"     Duration:	{self.running_data.duration()}s")
+        print(f"  Revolutions:	{self.running_data.revolutions()}")
+        print(f"    Max Speed:	{self.running_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def to_stopping(self):
         self.state = OMState.STOPPING
-        # Reinitialize stopping data
-        self.stopping_data = StoppingData()
         self.outputs.brake.engage()
-        self.outputs.motor.off()
+        # Stop the motor for good measure
+        self.outputs.motor.stop()
+
+        # Reinitialize stopping data
+        length_m = self.config.brake_length_m()
+        # TODO: Should this be the config setting instead of brake_delay_s?
+        timeout_s = 5.0
+        pulley_diameter_m = self.config.pulley_diameter_m()
+        self.stopping_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_stopping_to_await_engage)
 
     def from_stopping(self):
-        print(self.stopping_data)
+        print(f"Statistics for Stop:")
+        print(f"     Distance:	{self.stopping_data.distance_m()}m")
+        print(f"     Duration:	{self.stopping_data.duration()}s")
+        print(f"  Revolutions:	{self.stopping_data.revolutions()}")
+        print(f"    Max Speed:	{self.stopping_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def to_returning(self):
         self.state = OMState.RETURNING
-        self.return_data = ReturningData()
+        self.outputs.motor.backward(self.config.return_speed_mps())
+
+        # FIXME: This is probably insufficient for returning.
+        # We may need a lot more smarts about going faster or slower at
+        # different times to make this nice.
+        # This implementation should do reasonable deceleration and so forth
+        # May need to add some brake_delay time in here?
+        length_m = self.config.accel_length_m()
+        timeout_s = None
+        pulley_diameter_m = self.config.pulley_diameter_m()
+        self.returning_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_returning_to_await_engage)
 
     def from_returning(self):
         self.outputs.motor.stop()
+        print(f"Statistics for Return:")
+        print(f"     Distance:	{self.returning_data.distance_m()}m")
+        print(f"     Duration:	{self.returning_data.duration()}s")
+        print(f"  Revolutions:	{self.returning_data.revolutions()}")
+        print(f"    Max Speed:	{self.returning_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def to_jog_forward(self):
         self.state = OMState.JOG_FORWARD
         self.outputs.motor.forward(self.config.jog_speed_mps())
 
+        # TODO:
+        # Note that this won't stop you from going too far.
+        length_m = self.config.length_m()
+        timeout_s = None
+        pulley_diameter_m = self.config.pulley_diameter_m()
+        self.jog_forward_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_jog_forward_to_await_engage)
+
     def from_jog_forward(self):
         # Note: We don't put the brakes on
         self.outputs.motor.stop()
+        print(f"Statistics for Jog Forward:")
+        print(f"     Distance:	{self.returning_data.distance_m()}m")
+        print(f"     Duration:	{self.returning_data.duration()}s")
+        print(f"  Revolutions:	{self.returning_data.revolutions()}")
+        print(f"    Max Speed:	{self.returning_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def to_jog_backward(self):
         self.state = OMState.JOG_BACKWARD
         self.outputs.motor.backward(self.config.jog_speed_mps())
 
+        # TODO:
+        # Note that this won't stop you from going too far.
+        length_m = self.config.length_m()
+        timeout_s = None
+        pulley_diameter_m = self.config.pulley_diameter_m()
+        self.jog_backward_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_jog_backward_to_await_engage)
     def from_jog_backward(self):
         # Note: We don't put the brakes on
         self.outputs.motor.stop()
+        print(f"Statistics for Jog Backward:")
+        print(f"     Distance:	{self.returning_data.distance_m()}m")
+        print(f"     Duration:	{self.returning_data.duration()}s")
+        print(f"  Revolutions:	{self.returning_data.revolutions()}")
+        print(f"    Max Speed:	{self.returning_data.max_speed_mps()}m/s")
 
     # ----------------------------------------------------------
     def from_starting_to_await_engage(self):
@@ -684,79 +721,4 @@ class Controller:
         log("State:	jog_back	->	await_engage")
         self.from_jog_backward()
         self.to_await_engage()
-
-    # ----------------------------------------------------------
-    def transition(self, state):
-        """
-        Checks and implements state transitions.
-
-        This is a doubley nested if structure with the outer block being the current
-        state and the inner block being the requested new state.  Valid transitions
-        will have specifically named functions for the transitions.  Any others
-        are illegal and should error.
-
-        While this is ugly, it is straightforward, keeps state centralized, and
-        avoids some pretty awkward function calls to keep state in check.
-        """
-        # TODO: Make me a nice declarative set of nested maps.
-        if self.state == OMState.STARTING:
-            if state == OMState.AWAIT_ENGAGE:
-                self.from_starting_to_await_engage()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.AWAIT_ENGAGE:
-            if state == OMState.AWAIT_SET:
-                self.from_await_engage_to_await_set()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.AWAIT_SET:
-            if state == OMState.AWAIT_SET:
-                self.from_await_set_to_await_engage()
-            elif state == OMState.AWAIT_GO:
-                self.from_await_set_to_await_go()
-            elif state == OMState.RETURNING:
-                self.from_await_set_to_returning()
-            elif state == OMState.JOGGING:
-                self.from_await_set_to_jogging()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.AWAIT_GO:
-            if state == OMState.AWAIT_ENGAGE:
-                self.from_await_go_to_await_engage()
-            elif state == OMState.AWAIT_SET:
-                self.from_await_go_to_await_set()
-            elif state == OMState.RUNNING:
-                self.from_await_go_to_running()
-            elif state == OMState.JOGGING:
-                self.from_await_go_to_jogging()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.RUNNING:
-            if state == OMState.STOPPING:
-                self.from_running_to_stopping()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.STOPPING:
-            if state == OMState.AWAIT_ENGAGE:
-                self.from_stopping_to_await_engage()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.RETURNING:
-            if state == OMState.AWAIT_SET:
-                self.from_returning_to_await_engage()
-            elif state == OMState.AWAIT_GO:
-                self.from_returning_to_await_go()
-            elif state == OMState.JOGGING:
-                self.from_returning_to_jogging()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.JOGGING:
-            if state == OMState.AWAIT_ENGAGE:
-                self.from_jogging_to_await_engage()
-            else:
-                self.error(f"Attempt to transition from {self.state} to {state}")
-        elif self.state == OMState.ERROR:
-            self.error("Transition to error state from {state}")
-        else:
-            self.error(f"Invalid state transition '{state}' requested")
 
