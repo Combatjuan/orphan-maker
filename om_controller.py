@@ -163,6 +163,7 @@ class Controller:
         self.outputs = Outputs(config)
         self.inputs = Inputs(config)
         self.state = OMState.STARTING
+        self.position_m = None
         self.to_starting()
 
     def run(self):
@@ -371,7 +372,7 @@ class Controller:
 
     # --------------------
     def on_rotate_activated(self):
-        log("Event:	Rotate Magnet On")
+        log(f"Event:	Rotate Magnet On at {self.position_m}")
         if self.state == OMState.RUNNING:
             self.running_data.revolve()
         elif self.state == OMState.STOPPING:
@@ -499,6 +500,7 @@ class Controller:
     # ----------------------------------------------------------
     def to_await_set(self):
         self.state = OMState.AWAIT_SET
+        self.position_m = 0.0
         self.outputs.go_led.blink(on_time=1.0, off_time=1.0)
         if self.inputs.limit_sensor.value:
             self.from_await_set_to_await_go()
@@ -526,6 +528,7 @@ class Controller:
 
     def from_running(self):
         self.outputs.motor.stop()
+        self.position_m += self.running_data.distance_m()
         print(f"Statistics for Run:")
         print(f"     Distance:	{self.running_data.distance_m()}m")
         print(f"     Duration:	{self.running_data.duration()}s")
@@ -547,6 +550,7 @@ class Controller:
         self.stopping_data = Operation(length_m, timeout_s, pulley_diameter_m, self.from_stopping_to_await_engage)
 
     def from_stopping(self):
+        self.position_m += self.stopping_data.distance_m()
         print(f"Statistics for Stop:")
         print(f"     Distance:	{self.stopping_data.distance_m()}m")
         print(f"     Duration:	{self.stopping_data.duration()}s")
@@ -570,6 +574,7 @@ class Controller:
 
     def from_returning(self):
         self.outputs.motor.stop()
+        self.position_m -= self.returning_data.distance_m()
         print(f"Statistics for Return:")
         print(f"     Distance:	{self.returning_data.distance_m()}m")
         print(f"     Duration:	{self.returning_data.duration()}s")
@@ -591,6 +596,7 @@ class Controller:
     def from_jog_forward(self):
         # Note: We don't put the brakes on
         self.outputs.motor.stop()
+        self.position_m += self.jog_forward_data.distance_m()
         print(f"Statistics for Jog Forward:")
         print(f"     Distance:	{self.jog_forward_data.distance_m()}m")
         print(f"     Duration:	{self.jog_forward_data.duration()}s")
@@ -611,6 +617,7 @@ class Controller:
     def from_jog_backward(self):
         # Note: We don't put the brakes on
         self.outputs.motor.stop()
+        self.position_m -= self.jog_backward_data.distance_m()
         print(f"Statistics for Jog Backward:")
         print(f"     Distance:	{self.jog_backward_data.distance_m()}m")
         print(f"     Duration:	{self.jog_backward_data.duration()}s")
