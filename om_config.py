@@ -88,6 +88,8 @@ class Config:
         # Misc Settings
         power = config["misc"]
         self._button_debounce_s = float(power["button_debounce_s"])
+        if self._button_debounce_s == 0.0:
+            self._button_debounce_s = None
 
         # Sanity check settings
         self.validate()
@@ -117,7 +119,7 @@ class Config:
         assert self._return_speed_mps <= self._max_speed_mps, "Return speed exceeds max speed"
 
         # Misc
-        assert 0.0 < self._button_debounce_s < 0.25, "Invalid button debounce value"
+        assert self._button_debounce_s is None or 0.0 < self._button_debounce_s < 0.25, "Invalid button debounce value"
 
         # Pins
         pins = [
